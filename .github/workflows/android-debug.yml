@@ -36,7 +36,12 @@ jobs:
       - name: Install Android SDK packages
         uses: android-actions/setup-android@v3
         with:
-          packages: 'platforms;android-37 build-tools;37.0.0 ndk;30.0.15729638 cmake;3.31.1'
+          # 2026 SDK channel rename: API 37 ships as platforms;android-37.0
+          # (minor-versioned platforms); the old platforms;android-37 id no
+          # longer exists. cmdline-tools 22.0 (15859902) is the first one
+          # that parses the v4 repository XML carrying these packages.
+          cmdline-tools-version: 15859902
+          packages: 'platforms;android-37.0 build-tools;37.0.0 ndk;30.0.15729638 cmake;3.31.6'
 
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@v1.2
