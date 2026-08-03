@@ -1,0 +1,94 @@
+# Fork-local CI: upstream dolphin uses its own Buildbot (dolphin.ci), there is
+# no GitHub Actions workflow upstream. This workflow builds the Android debug
+# APK for the fork and uploads it as an artifact so it can be installed on
+# device. Kept upstream-safe: never touches dolphin-emu/dolphin.
+name: Android Debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    if: github.repository != 'dolphin-emu/dolphin'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - name: Checkout with full history and submodules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # versionCode/versionName derived from git history
+          submodules: recursive
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android SDK packages
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-37 build-tools;37.0.0 ndk;30.0.15729638 cmake;3.31.1'
+
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: dolphin-android-ndk30
+          max-size: 5G
+
+      # Fork-local: route the native build through ccache (CMake/CCache.cmake
+      # picks it up when ENABLE_CCACHE=ON). Injected on the runner only, so the
+      # repository stays clean for upstream patches.
+      - name: Enable ccache for native build
+        run: |
+          sed -i 's|"-DCMAKE_BUILD_TYPE=RelWithDebInfo"|"-DCMAKE_BUILD_TYPE=RelWithDebInfo", "-DENABLE_CCACHE=ON"|' \
+            Source/Android/app/build.gradle.kts
+          grep -n ENABLE_CCACHE Source/Android/app/build.gradle.kts
+
+      - name: Restore pinned debug keystore
+        env:
+          DEBUG_KEYSTORE: ${{ secrets.DEBUG_KEYSTORE }}
+        run: |
+          if [ -n "$DEBUG_KEYSTORE" ]; then
+            mkdir -p "$HOME/.android"
+            printf '%s' "$DEBUG_KEYSTORE" | base64 -d > "$HOME/.android/debug.keystore"
+            echo "Pinned debug keystore restored"
+          else
+            echo "No pinned keystore; Gradle will generate a throwaway debug key"
+          fi
+
+      - name: Build debug APK
+        working-directory: Source/Android
+        run: ./gradlew :app:assembleDebug --stacktrace
+
+      - name: Stage artifact
+        run: |
+          SHORT_REV=$(git describe --tags --abbrev=0 2>/dev/null || echo master)
+          if [ "$SHORT_REV" != "master" ]; then
+            COUNT=$(git rev-list --count "${SHORT_REV}..HEAD")
+            NAME="dolphin-android-${SHORT_REV}-${COUNT}-debug.apk"
+          else
+            NAME="dolphin-android-$(git rev-parse --short HEAD)-debug.apk"
+          fi
+          cp Source/Android/app/build/outputs/apk/debug/app-debug.apk "$NAME"
+          echo "APK_NAME=$NAME" >> "$GITHUB_ENV"
+          ls -l "$NAME"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dolphin-android-debug
+          path: ${{ env.APK_NAME }}
+          retention-days: 30
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
