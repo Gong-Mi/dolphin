@@ -118,6 +118,31 @@ android {
     }
 }
 
+// Fork-local: stage Data/Sys into app/src/main/assets BEFORE AGP merges
+// assets. Upstream relies on the CMake-configure-time copy in
+// Source/Android/jni/CMakeLists.txt, but AGP declares no dependency between
+// mergeAssets and CMake configure, so in a clean checkout (e.g. GitHub
+// Actions) mergeAssets runs first and the APK ships with an EMPTY assets/
+// dir: Sys/GC/font_japanese.bin (Shift JIS IPL font) is missing, and
+// Japanese titles warn "Trying to access Shift JIS fonts but they are not
+// loaded". This task mirrors the CMake copy (incl. the Themes exclusion) and
+// pins the ordering via the task graph. CMake's own copy is idempotent and
+// stays as the fallback for non-Gradle/native-only builds.
+val stageSysData by tasks.registering(Copy::class) {
+    // repo root = Source/Android (gradle root) -> Source -> repo root
+    from(rootProject.projectDir.parentFile.parentFile.resolve("Data/Sys"))
+    into(layout.projectDirectory.dir("src/main/assets/Sys"))
+    exclude("Themes/")
+    includeEmptyDirs = false
+}
+
+tasks.configureEach {
+    // mergeDebugAssets / mergeReleaseAssets / etc.
+    if (name.startsWith("merge") && name.endsWith("Assets")) {
+        dependsOn(stageSysData)
+    }
+}
+
 dependencies {
     baselineProfile(project(":benchmark"))
     coreLibraryDesugaring(libs.desugar.jdk.libs)
